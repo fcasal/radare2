@@ -162,12 +162,22 @@ static const char *help_msg_equal[] = {
 	"=h-", "", "stop background webserver",
 	"=h--", "", "stop foreground webserver",
 	"=h*", "", "restart current webserver",
-	"=h&", " port", "start http server in background)",
+	"=h&", " port", "start http server in background",
 	"=H", " port", "launch browser and listen for http",
 	"=H&", " port", "launch browser and listen for http in background",
 	"\ngdbserver:", "", "",
 	"=g", " port file [args]", "listen on 'port' debugging 'file' using gdbserver",
 	"=g!", " port file [args]", "same as above, but debug protocol messages (like gdbserver --remote-debug)",
+	NULL
+};
+
+static const char *help_msg_equalh[] = {
+	"Usage:",  "=h[---*&] [port]", " # manage http connections",
+	"=h", " port", "listen for http connections (r2 -qc=H /bin/ls)",
+	"=h-", "", "stop background webserver",
+	"=h--", "", "stop foreground webserver",
+	"=h*", "", "restart current webserver",
+	"=h&", " port", "start http server in background",
 	NULL
 };
 
@@ -503,7 +513,11 @@ static int cmd_rap(void *data, const char *input) {
 		r_core_rtr_gdb (core, getArg (input[1], 'g'), input + 1);
 		break;
 	case 'h': // "=h"
-		r_core_rtr_http (core, getArg (input[1], 'h'), input + 1);
+		if (input[1] != '?') {
+			r_core_rtr_http (core, getArg (input[1], 'h'), input + 1);
+		} else { // "=h?"
+			r_core_cmd_help (core, help_msg_equalh);
+		}
 		break;
 	case 'H': // "=H"
 		while (input[1] == ' ') {
@@ -1439,7 +1453,7 @@ R_API int r_core_cmd_pipe(RCore *core, char *radare_cmd, char *shell_cmd) {
 	r_config_set_i (core->config, "scr.interactive", 0);
 	if (!r_config_get_i (core->config, "scr.pipecolor")) {
 		pipecolor = r_config_get_i (core->config, "scr.color");
-		r_config_set_i (core->config, "scr.color", 0);
+		r_config_set_i (core->config, "scr.color", COLOR_MODE_DISABLED);
 	}
 	if (*shell_cmd=='!') {
 		r_cons_grep_parsecmd (shell_cmd, "\"");
@@ -1884,7 +1898,7 @@ static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon) {
 					r_config_set_i (core->config, "scr.html", true);
 				} else if (!strcmp (ptr + 1, "T")) { // "|T"
 					scr_color = r_config_get_i (core->config, "scr.color");
-					r_config_set_i (core->config, "scr.color", false);
+					r_config_set_i (core->config, "scr.color", COLOR_MODE_DISABLED);
 					core->cons->use_tts = true;
 				} else if (ptr[1]) { // "| grep .."
 					int value = core->num->value;
@@ -1904,7 +1918,7 @@ static int r_core_cmd_subst_i(RCore *core, char *cmd, char *colon) {
 					scr_html = r_config_get_i (core->config, "scr.html");
 					r_config_set_i (core->config, "scr.html", 0);
 					scr_color = r_config_get_i (core->config, "scr.color");
-					r_config_set_i (core->config, "scr.color", false);
+					r_config_set_i (core->config, "scr.color", COLOR_MODE_DISABLED);
 				}
 			}
 		}
@@ -2063,7 +2077,7 @@ next:
 			pipefd = r_cons_pipe_open (str, fdn, ptr[1] == '>');
 			if (pipefd != -1) {
 				if (!pipecolor) {
-					r_config_set_i (core->config, "scr.color", 0);
+					r_config_set_i (core->config, "scr.color", COLOR_MODE_DISABLED);
 				}
 				ret = r_core_cmd_subst (core, cmd);
 				r_cons_flush ();
@@ -2229,6 +2243,39 @@ repeat_arroba:
 			case 'F': // "@F:" // temporary flag space
 				flgspc = r_flag_space_get (core->flags, ptr + 2);
 				r_flag_space_set (core->flags, ptr + 2);
+				break;
+			case 'B': // "@B:#" // seek to the last instruction in current bb
+				{
+					int index = (int)r_num_math (core->num, ptr + 2);
+					// XXX this is slow, can be optimized to just retreive the bb we want
+					RListIter *iter;
+					RAnalBlock *bb;
+					RAnalFunction *fcn = r_anal_get_fcn_in (core->anal, core->offset, 0);
+					if (fcn) {
+						r_list_foreach (fcn->bbs, iter, bb) {
+							if ((core->offset >= bb->addr) && (core->offset < (bb->addr + bb->size))) {
+								int count = bb->op_pos_size / sizeof (bb->op_pos[0]);
+								int pos = (index < 0) ? count + index + 1: index;
+								if (pos < 0) {
+									pos = 0;
+								}
+								if (pos > count) {
+									pos = count;
+								}
+								int lastOp = bb->op_pos[pos];
+								for (i = 0; i < count; i++) {
+									eprintf ("%d 0x%llx %d\n", pos, core->offset + bb->op_pos[i], i);
+								}
+								r_core_seek (core, core->offset + lastOp, 1);
+								core->tmpseek = true;
+								goto fuji;
+								break;
+							}
+						}
+					} else {
+						eprintf ("Cant find a function for 0x%08"PFMT64x"\n", core->offset);
+					}
+				}
 				break;
 			case 'f': // "@f:" // slurp file in block
 				f = r_file_slurp (ptr + 2, &sz);
